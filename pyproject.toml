@@ -3,5 +3,5 @@ name = "apex-spotter"
 version = "0.1.0"
 description = "Simplistic tool to spot Apex frame in video"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.10"
 dependencies = []
