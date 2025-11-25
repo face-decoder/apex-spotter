@@ -3,6 +3,7 @@ __pycache__/
 build/
 dist/
 wheels/
+datasource/
 *.egg-info
 .venv/
 .ruff_cache/
