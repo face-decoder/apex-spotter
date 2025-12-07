@@ -28,6 +28,7 @@ class TVL1:
                 self.tvl1           = cv2.cuda.OpticalFlowDual_TVL1_create()
                 self.gpumat_prev    = cv2.cuda_GpuMat()
                 self.gpumat_next    = cv2.cuda_GpuMat()
+                self.gpumat_flow    = cv2.cuda_GpuMat()
 
             # Otherwise, fallback to CPU version
         else:
@@ -69,8 +70,8 @@ class TVL1:
             self.gpumat_prev.upload(gray_prev)
             self.gpumat_next.upload(gray_next)
 
-            flow_gpu = self.tvl1.calc(self.gpumat_prev, self.gpumat_next, None)
-            
+            flow_gpu = self.tvl1.calc(self.gpumat_prev, self.gpumat_next, self.gpumat_flow)
+
             flow = flow_gpu.download()
         else:
             flow = self.tvl1.calc(gray_prev, gray_next, None)
@@ -105,7 +106,7 @@ class TVL1:
             self.flows.append(flow)
 
         return self.flows
-    
+
 
     def magnitude(self):
         """
