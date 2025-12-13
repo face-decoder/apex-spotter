@@ -11,7 +11,7 @@ uv venv
 Then install the required module from requirements.txt
 
 ```bash
-uv pip install -r requirements.txt
+uv sync
 ```
 
 After this then we can running either notebook or the application scripts.
