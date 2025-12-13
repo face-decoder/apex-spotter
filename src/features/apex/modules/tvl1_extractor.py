@@ -70,9 +70,11 @@ class TVL1:
             self.gpumat_prev.upload(gray_prev)
             self.gpumat_next.upload(gray_next)
 
-            flow_gpu = self.tvl1.calc(self.gpumat_prev, self.gpumat_next, self.gpumat_flow)
+            self.gpumat_flow = self.tvl1.calc(self.gpumat_prev, self.gpumat_next, self.gpumat_flow)
 
-            flow = flow_gpu.download()
+            flow = self.gpumat_flow.download()
+
+            self.gpumat_prev, self.gpumat_next, self.gpumat_next, self.gpumat_prev
         else:
             flow = self.tvl1.calc(gray_prev, gray_next, None)
 
