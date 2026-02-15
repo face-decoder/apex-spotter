@@ -1,171 +1,170 @@
+import math
 import numpy as np
-from typing import List, Tuple
-from src.video.modules import Video
+from typing import List, Tuple, Literal
 from scipy.signal import savgol_filter
-from src.face.modules import FaceRoiPoints, FaceRoiSizes
-from src.face.modules import FaceLandmark
+
+from src.video.modules import Video
+from src.face.modules import FaceLandmark, FaceRoiPoints
 from src.optical_flow.modules import TVL1
 from src.apex.modules import ApexPhase, ApexSmoother
 
 
+ExtractionMode = Literal["roi", "fullface"]
+
+
 class ApexPhaseSpotter:
 
-    def __init__(self, distance_threshold: int = 11, prominence_threshold: float = 0.3):
+    def __init__(self,
+                 mode: ExtractionMode = "roi",
+                 distance_threshold: int = 11,
+                 prominence_threshold: float = 0.1,
+                 tile_size: Tuple[int, int] = (64, 64),
+                 face_size: Tuple[int, int] = (240, 240),
+                 margin: float = 0.05):
         """
-        Inisialisasi instance untuk deteksi fase apex pada sebuah video
+        Menginisialisasi blueprint untuk deteksi fase apex pada video ekspresi wajah mikro.
+        Proses ekstraksi memiliki dua mode yaitu untuk keseluruhan area wajah dan juga fokus pada Region of Interest (RoI) tertentu seperti mata, bibir, dan alis.
+        Deteksi fase apex dilakukan dengan menganalisis perubahan magnitudo optical flow menggunakan algoritma TV-L1, kemudian mengidentifikasi titik puncak (apex)
+        dan fase berdasarkan kriteria jarak dan prominensi yang ditentukan.
 
         Args:
-            distance_threshold (int): Jarak minimum antara puncak apex yang terdeteksi.
-            prominence_threshold (float): Ambang batas prominensi untuk mendeteksi puncak apex.
+            mode (ExtractionMode): Mode ekstraksi yang digunakan, bisa "roi" untuk fokus pada RoI atau "fullface" untuk keseluruhan wajah.
+            distance_threshold (int): Batas jarak minimum antara puncak yang terdeteksi untuk dianggap sebagai fase yang berbeda.
+            prominence_threshold (float): Batas prominensi minimum untuk puncak yang terdeteksi agar dianggap valid.
+            tile_size (Tuple[int, int]): Ukuran target untuk setiap RoI yang diekstraksi dalam mode "roi".
+            face_size (Tuple[int, int]): Ukuran target untuk wajah yang diekstraksi dalam mode "fullface".
+            margin (float): Margin tambahan yang diterapkan saat mengekstraksi RoI atau wajah untuk memastikan area yang cukup untuk analisis optical flow. 
+                            Nilai ini dinyatakan sebagai persentase dari ukuran bounding box yang dihasilkan oleh deteksi landmark wajah.
         """
-    
+
+        self.mode = mode
+        self.margin = margin
+
         self.landmarker = FaceLandmark()
 
-        self.tvl1 = TVL1()
+        self.tvl1 = TVL1(fast_mode=True)
 
         self.apex_phase = ApexPhase(distance_threshold=distance_threshold,
                                     prominence_threshold=prominence_threshold)
-        
-        self.magnitudes = []
 
-    
+        self.tile_w, self.tile_h = tile_size
+
+        self.roi_defs = [frozenset(FaceRoiPoints.LEFT_EYE_POINTS),
+                         frozenset(FaceRoiPoints.RIGHT_EYE_POINTS),
+                         frozenset(FaceRoiPoints.LIPS_POINTS),
+                         frozenset(FaceRoiPoints.LEFT_EYEBROW_POINTS),
+                         frozenset(FaceRoiPoints.RIGHT_EYEBROW_POINTS)]
+
+        self.cols = 3
+        self.rows = math.ceil(len(self.roi_defs) / self.cols)
+
+        self.face_size = face_size
+
+        self.magnitudes: List[float] = []
+
+
     def process(self, video_path: str) -> Tuple[List[int], List[int]]:
-        """
-        Memproses video untuk mendeteksi indeks apex dan fase
 
-        Args:
-            video_path (str): Path ke file video yang akan diproses
-
-        Returns:
-            Tuple[List[int], List[int]]: Indeks apex dan fase yang terdeteksi
-        """
+        self.magnitudes.clear()
 
         video = Video(video_path=video_path)
 
-        video.map(self.__process_with_roi)
+        if self.mode == "roi":
+            video.map(self.__process_roi)
+        elif self.mode == "fullface":
+            video.map(self.__process_fullface)
+        else:
+            raise ValueError(f"Unsupported mode: {self.mode}")
 
-        apex_indices, phases = self.__find_apex_phase(self.magnitudes)
+        return self.__find_apex_phase(self.magnitudes)
 
-        return apex_indices, phases
 
-    
-    def __process_with_roi(self, prev_frame: np.ndarray, curr_frame: np.ndarray, frame_index: int) -> np.ndarray:
+    def __process_roi(self,
+                      prev_frame: np.ndarray,
+                      curr_frame: np.ndarray,
+                      frame_index: int) -> None:
 
         prev_landmarks = self.landmarker.detect(prev_frame)
         curr_landmarks = self.landmarker.detect(curr_frame)
 
-        cropped_left_eye_prev, left_eye_roi_mask               = self.landmarker.crop_roi(image=prev_frame.copy(),
-                                                                                          landmark_result=prev_landmarks,
-                                                                                          roi_points=FaceRoiPoints.LEFT_EYE_POINTS,
-                                                                                          target_size=FaceRoiSizes.EYE_SIZE)
-        
-        cropped_left_eye_next, left_eye_roi_mask               = self.landmarker.crop_roi(image=curr_frame.copy(),
-                                                                                          landmark_result=curr_landmarks,
-                                                                                          roi_points=FaceRoiPoints.LEFT_EYE_POINTS,
-                                                                                          target_size=FaceRoiSizes.EYE_SIZE)
-        
-        cropped_right_eye_prev, right_eye_roi_mask             = self.landmarker.crop_roi(image=prev_frame.copy(),
-                                                                                          landmark_result=prev_landmarks,
-                                                                                          roi_points=FaceRoiPoints.RIGHT_EYE_POINTS,
-                                                                                          target_size=FaceRoiSizes.EYE_SIZE)
-        
-        cropped_right_eye_next, right_eye_roi_mask             = self.landmarker.crop_roi(image=curr_frame.copy(),
-                                                                                          landmark_result=curr_landmarks,
-                                                                                          roi_points=FaceRoiPoints.RIGHT_EYE_POINTS,
-                                                                                          target_size=FaceRoiSizes.EYE_SIZE)
-        
-        cropped_left_eyebrow_prev, left_eyebrow_roi_mask       = self.landmarker.crop_roi(image=prev_frame.copy(),
-                                                                                          landmark_result=prev_landmarks,
-                                                                                          roi_points=FaceRoiPoints.LEFT_EYEBROW_POINTS,
-                                                                                          target_size=FaceRoiSizes.EYEBROW_SIZE)
-        
-        cropped_left_eyebrow_next, left_eyebrow_roi_mask       = self.landmarker.crop_roi(image=curr_frame.copy(),
-                                                                                          landmark_result=curr_landmarks,
-                                                                                          roi_points=FaceRoiPoints.LEFT_EYEBROW_POINTS,
-                                                                                          target_size=FaceRoiSizes.EYEBROW_SIZE)
-        
-        cropped_right_eyebrow_prev, right_eyebrow_roi_mask     = self.landmarker.crop_roi(image=prev_frame.copy(),
-                                                                                          landmark_result=prev_landmarks,
-                                                                                          roi_points=FaceRoiPoints.RIGHT_EYEBROW_POINTS,
-                                                                                          target_size=FaceRoiSizes.EYEBROW_SIZE)
-        
-        cropped_right_eyebrow_next, right_eyebrow_roi_mask     = self.landmarker.crop_roi(image=curr_frame.copy(),
-                                                                                          landmark_result=curr_landmarks,
-                                                                                          roi_points=FaceRoiPoints.RIGHT_EYEBROW_POINTS,
-                                                                                          target_size=FaceRoiSizes.EYEBROW_SIZE)
-        
-        cropped_lips_prev, lips_roi_mask                       = self.landmarker.crop_roi(image=prev_frame.copy(),
-                                                                                          landmark_result=prev_landmarks,
-                                                                                          roi_points=FaceRoiPoints.LIPS_POINTS,
-                                                                                          target_size=FaceRoiSizes.LIPS_SIZE)
-        
-        cropped_lips_next, lips_roi_mask                       = self.landmarker.crop_roi(image=curr_frame.copy(),
-                                                                                          landmark_result=curr_landmarks,
-                                                                                          roi_points=FaceRoiPoints.LIPS_POINTS,
-                                                                                          target_size=FaceRoiSizes.LIPS_SIZE)
-        
-        flow_left_eye           = self.tvl1.compute(cropped_left_eye_prev, cropped_left_eye_next)
-        flow_right_eye          = self.tvl1.compute(cropped_right_eye_prev, cropped_right_eye_next)
-        flow_left_eyebrow       = self.tvl1.compute(cropped_left_eyebrow_prev, cropped_left_eyebrow_next)
-        flow_right_eyebrow      = self.tvl1.compute(cropped_right_eyebrow_prev, cropped_right_eyebrow_next)
-        flow_lips               = self.tvl1.compute(cropped_lips_prev, cropped_lips_next)
+        canvas_mask = np.zeros((self.rows * self.tile_h, self.cols * self.tile_w),dtype=np.uint8)
+        canvas_prev = np.zeros((self.rows * self.tile_h, self.cols * self.tile_w, 3), dtype=np.uint8)
+        canvas_next = np.zeros_like(canvas_prev)
 
-        flow_left_eye[..., 0]    *= (left_eye_roi_mask > 0)
-        flow_left_eye[..., 1]    *= (left_eye_roi_mask > 0)
+        for j, roi_points in enumerate(self.roi_defs):
 
-        flow_right_eye[..., 0]   *= (right_eye_roi_mask > 0)
-        flow_right_eye[..., 1]   *= (right_eye_roi_mask > 0)
+            roi_prev, mask_prev = self.landmarker.crop_roi(image=prev_frame,
+                                                           landmark_result=prev_landmarks,
+                                                           roi_points=roi_points,
+                                                           margin=self.margin,
+                                                           target_size=(self.tile_w, self.tile_h))
 
-        flow_left_eyebrow[..., 0]    *= (left_eyebrow_roi_mask > 0)
-        flow_left_eyebrow[..., 1]    *= (left_eyebrow_roi_mask > 0)
+            roi_next, mask_next = self.landmarker.crop_roi(image=curr_frame,
+                                                           landmark_result=curr_landmarks,
+                                                           roi_points=roi_points,
+                                                           margin=self.margin,
+                                                           target_size=(self.tile_w, self.tile_h))
 
-        flow_right_eyebrow[..., 0]   *= (right_eyebrow_roi_mask > 0)
-        flow_right_eyebrow[..., 1]   *= (right_eyebrow_roi_mask > 0)
+            r, c = divmod(j, self.cols)
+            y1, y2 = r * self.tile_h, (r + 1) * self.tile_h
+            x1, x2 = c * self.tile_w, (c + 1) * self.tile_w
 
-        flow_lips[..., 0]    *= (lips_roi_mask > 0)
-        flow_lips[..., 1]    *= (lips_roi_mask > 0)
+            canvas_prev[y1:y2, x1:x2] = roi_prev
+            canvas_next[y1:y2, x1:x2] = roi_next
 
-        magnitude_left_eye          = np.sqrt(flow_left_eye[..., 0]**2 + flow_left_eye[..., 1]**2)
-        magnitude_right_eye         = np.sqrt(flow_right_eye[..., 0]**2 + flow_right_eye[..., 1]**2)
-        magnitude_left_eyebrow      = np.sqrt(flow_left_eyebrow[..., 0]**2 + flow_left_eyebrow[..., 1]**2)
-        magnitude_right_eyebrow     = np.sqrt(flow_right_eyebrow[..., 0]**2 + flow_right_eyebrow[..., 1]**2)
-        magnitude_lips              = np.sqrt(flow_lips[..., 0]**2 + flow_lips[..., 1]**2)
+            canvas_mask[y1:y2, x1:x2] = ((mask_prev > 0) & (mask_next > 0)).astype(np.uint8)
 
-        mean_magnitude_left_eye        = np.mean(magnitude_left_eye)
-        mean_magnitude_right_eye       = np.mean(magnitude_right_eye)
-        mean_magnitude_left_eyebrow    = np.mean(magnitude_left_eyebrow)
-        mean_magnitude_right_eyebrow   = np.mean(magnitude_right_eyebrow)
-        mean_magnitude_lips            = np.mean(magnitude_lips)
+        flow = self.tvl1.compute(canvas_prev, canvas_next, download=False)
 
-        mean_magnitude = np.mean([
-            mean_magnitude_left_eye,
-            mean_magnitude_right_eye,
-            mean_magnitude_left_eyebrow,
-            mean_magnitude_right_eyebrow,
-            mean_magnitude_lips
-        ])
+        if hasattr(flow, "download"): flow = flow.download()
+
+        magnitude = np.hypot(flow[..., 0], flow[..., 1])
+
+        valid = canvas_mask > 0
+        mean_magnitude = (float(np.mean(magnitude[valid])) if np.any(valid) else float(np.mean(magnitude)))
 
         self.magnitudes.append(mean_magnitude)
 
 
-    def __find_apex_phase(self, magnitudes: List[np.ndarray]) -> Tuple[List[int], List[int]]:
-        """
-        Mendeteksi indeks apex dan fase pada sinyal magnitudo
+    def __process_fullface(self,
+                           prev_frame: np.ndarray,
+                           curr_frame: np.ndarray,
+                           frame_index: int) -> None:
 
-        Args:
-            magnitudes (List[np.ndarray]): Daftar magnitudo yang telah dihaluskan
+        prev_landmarks = self.landmarker.detect(prev_frame)
+        curr_landmarks = self.landmarker.detect(curr_frame)
 
-        Returns:
-            Tuple[List[int], List[int]]: Indeks apex dan fase yang terdeteksi
-        """
+        prev_face = self.landmarker.crop(image=prev_frame,
+                                         landmarks=prev_landmarks,
+                                         margin=self.margin,
+                                         output_size=self.face_size)
+
+        curr_face = self.landmarker.crop(image=curr_frame,
+                                         landmarks=curr_landmarks,
+                                         margin=self.margin,
+                                         output_size=self.face_size)
+
+        flow = self.tvl1.compute(prev_face, curr_face, download=False)
+
+        if hasattr(flow, "download"): flow = flow.download()
+
+        magnitude = np.hypot(flow[..., 0], flow[..., 1])
+
+        mean_magnitude = float(np.mean(magnitude))
+
+        self.magnitudes.append(mean_magnitude)
+
+
+    def __find_apex_phase(self,
+                          magnitudes: List[float]) -> Tuple[List[int], List[int]]:
+
         window_length = ApexSmoother.calculate_window_length(len(magnitudes))
-
         polyorder = ApexSmoother.calculate_polyorder(window_length)
 
-        smoothed_magnitudes = savgol_filter(magnitudes, window_length, polyorder)
+        smoothed = savgol_filter(magnitudes, window_length, polyorder)
 
-        apex_indices = self.apex_phase.find_apex(signal=smoothed_magnitudes)
+        apex_indices = self.apex_phase.find_apex(signal=smoothed)
 
-        phases = self.apex_phase.find_phase(signal=smoothed_magnitudes, apex_indices=apex_indices)
+        phases = self.apex_phase.find_phase(signal=smoothed, apex_indices=apex_indices)
 
         return apex_indices, phases
