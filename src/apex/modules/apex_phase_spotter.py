@@ -79,6 +79,30 @@ class ApexPhaseSpotter:
         return self.__find_apex_phase(self.magnitudes)
 
 
+    def process_images(self, images: List[np.ndarray]) -> Tuple[List[int], List[int]]:
+
+        self.magnitudes.clear()
+
+        if len(images) < 2:
+            return [], []
+
+        prev_frame = images[0]
+
+        for frame_index in range(1, len(images)):
+            curr_frame = images[frame_index]
+
+            if self.mode == "roi":
+                self.__process_roi(prev_frame, curr_frame, frame_index - 1)
+            elif self.mode == "fullface":
+                self.__process_fullface(prev_frame, curr_frame, frame_index - 1)
+            else:
+                raise ValueError(f"Unsupported mode: {self.mode}")
+
+            prev_frame = curr_frame
+
+        return self.__find_apex_phase(self.magnitudes)
+
+
     def __process_roi(self,
                       prev_frame: np.ndarray,
                       curr_frame: np.ndarray,
