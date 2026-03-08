@@ -9,4 +9,4 @@ datasource/
 .ruff_cache/
 .pytest_cache/
 .coverage
-.output
+.output-*
